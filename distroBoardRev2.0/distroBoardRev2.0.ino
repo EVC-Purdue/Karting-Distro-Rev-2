@@ -3,11 +3,11 @@
  */
 
 // --- Pin Definitions (Adjust based on your PCB layout) ---
-const int PIN_LED        = 0;  // PA4
-const int PIN_CONTACTOR  = 1;  // PA5
-const int PIN_PRECHARGE  = 2;  // PA6
-const int PIN_ESTOP      = 3;  // PA7 (Low = Fault)
-const int PIN_LOAD_V     = A0; // ADC pin
+const int PIN_LED        = PIN_PA7;  // PA7
+const int PIN_CONTACTOR  = PIN_PA5;  // PA5
+const int PIN_PRECHARGE  = PIN_PA4;  // PA4
+const int PIN_ESTOP      = PIN_PA6;  // PA6 (Low = Fault)
+const int PIN_LOAD_V     = PIN_PA1; // ADC pin
 
 // --- Constants & Calibration ---
 const float V_REF          = 3.3;     // Internal or VCC ref
@@ -30,14 +30,14 @@ void setup() {
   pinMode(PIN_CONTACTOR, OUTPUT);
   pinMode(PIN_PRECHARGE, OUTPUT);
   pinMode(PIN_LED, OUTPUT);
-  pinMode(PIN_ESTOP, INPUT_PULLUP); // Ensure pullup if not on PCB
+  pinMode(PIN_ESTOP, INPUT); // Ensure pullup if not on PCB
 
   digitalWrite(PIN_CONTACTOR, LOW);
   digitalWrite(PIN_PRECHARGE, LOW);
   digitalWrite(PIN_LED, LOW);
 
   // 2. Setup ADC & Read Initial State
-  analogReference(INTERNAL0V55); // Or DEFAULT (VCC). Adjust math if changed.
+  analogReference(INTERNAL4V3); // can use 4.3
   initialLoadVoltage = readVoltage();
 
   // 3. Initial Fault Check
