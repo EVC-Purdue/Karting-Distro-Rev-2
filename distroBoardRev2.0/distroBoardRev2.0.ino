@@ -10,7 +10,7 @@ const int PIN_ESTOP      = PIN_PA6;  // PA6 (Low = Fault)
 const int PIN_LOAD_V     = PIN_PA1; // ADC pin
 
 // --- Constants & Calibration ---
-const float V_REF          = 3.3;     // Internal or VCC ref
+const float V_REF          = 4.3;     // Internal or VCC ref
 const float DIVIDER_RATIO  = 26.0;    // Example: 100k/5k divider (Scale to your PCB!)
 const float MIN_V_READY    = 60.0;    // Target voltage to close contactor
 const float MAX_DV_DT      = 1.0;     // Max 1V/s change to consider "settled"
