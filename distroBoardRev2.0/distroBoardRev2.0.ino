@@ -2,6 +2,9 @@
  * Logic for Precharge and Contactor Control
  */
 
+#include <Arduino.h>
+#include <avr/interrupt.h>
+
 // --- Pin Definitions (Adjust based on your PCB layout) ---
 const int PIN_LED        = PIN_PA7;  // PA7
 const int PIN_CONTACTOR  = PIN_PA5;  // PA5
@@ -11,19 +14,75 @@ const int PIN_LOAD_V     = PIN_PA1; // ADC pin
 
 // --- Constants & Calibration ---
 const float V_REF          = 4.3;     // Internal or VCC ref
-const float DIVIDER_RATIO  = 26.0;    // Example: 100k/5k divider (Scale to your PCB!)
+const float DIVIDER_RATIO  = 26.0;    
 const float MIN_V_READY    = 60.0;    // Target voltage to close contactor
 const float MAX_DV_DT      = 1.0;     // Max 1V/s change to consider "settled"
 const unsigned long TIMEOUT_MS = 10000; // 10s Precharge timeout
 
+const uint16_t LED_TIMER_TICK_MS = 10;
+const uint16_t LED_SLOW_BLINK_MS = 500;
+const uint16_t LED_FAST_BLINK_MS = 100;
+
+enum FaultType : uint8_t {
+  FAULT_NONE = 0,
+  FAULT_ESTOP,
+  FAULT_PRECHARGE_FAIL,
+  FAULT_CONTACTOR_WELD
+};
+
+enum LedMode : uint8_t {
+  LED_OFF = 0,
+  LED_SOLID,
+  LED_BLINK_SLOW,
+  LED_BLINK_FAST
+};
+
 // --- Global Variables ---
 float initialLoadVoltage = 0;
-bool faultActive = false;
+volatile bool faultActive = false;
+volatile bool estopInterruptFlag = false;
+volatile FaultType activeFault = FAULT_NONE;
+
+volatile LedMode ledMode = LED_OFF;
+volatile bool ledOutputState = false;
+volatile uint16_t ledTickCounter = 0;
 
 // --- Function Prototypes ---
 float readVoltage();
-void throwFault(String reason);
-void checkEstop();
+void throwFault(FaultType type);
+void updateLedModeForFault(FaultType type);
+void setupLedTimer();
+void setupEstopInterrupt();
+void applyFaultOutputs();
+void handleEstopLatched();
+void beginPrecharge();
+
+ISR(TCB0_INT_vect) {
+  if (ledMode == LED_SOLID) {
+    ledOutputState = true;
+  } else if (ledMode == LED_OFF) {
+    ledOutputState = false;
+  } else {
+    const uint16_t targetMs = (ledMode == LED_BLINK_FAST) ? LED_FAST_BLINK_MS : LED_SLOW_BLINK_MS;
+    const uint16_t targetTicks = targetMs / LED_TIMER_TICK_MS;
+
+    ledTickCounter++;
+    if (ledTickCounter >= targetTicks) {
+      ledTickCounter = 0;
+      ledOutputState = !ledOutputState;
+    }
+  }
+
+  digitalWrite(PIN_LED, ledOutputState ? HIGH : LOW);
+  TCB0.INTFLAGS = TCB_CAPT_bm;
+}
+
+void onEstopTriggered() {
+  estopInterruptFlag = true;
+
+  digitalWrite(PIN_CONTACTOR, LOW);
+  digitalWrite(PIN_PRECHARGE, LOW);
+}
 
 void setup() {
   // 1. Initial State: Safety First
@@ -36,12 +95,22 @@ void setup() {
   digitalWrite(PIN_PRECHARGE, LOW);
   digitalWrite(PIN_LED, LOW);
 
+  setupLedTimer();
+  setupEstopInterrupt();
+
   // 2. Setup ADC & Read Initial State
   analogReference(INTERNAL4V3); // can use 4.3
   initialLoadVoltage = readVoltage();
 
   // 3. Initial Fault Check
-  checkEstop();
+  delay(1000);
+  if (digitalRead(PIN_ESTOP) == LOW) {
+    throwFault(FAULT_ESTOP);
+  }
+
+  if (!faultActive && initialLoadVoltage > MIN_V_READY) {
+    throwFault(FAULT_CONTACTOR_WELD);
+  }
 
   if (!faultActive) {
     beginPrecharge();
@@ -49,15 +118,30 @@ void setup() {
 }
 
 void loop() {
-  // Post-precharge monitor
-  checkEstop();
-  
+  handleEstopLatched();
+
   if (faultActive) {
-    digitalWrite(PIN_CONTACTOR, LOW);
-    digitalWrite(PIN_PRECHARGE, LOW);
-    // Rapid blink LED for fault
-    digitalWrite(PIN_LED, (millis() / 100) % 2); 
+    applyFaultOutputs();
   }
+
+  delay(100); // Reduce CPU load
+}
+
+void setupLedTimer() {
+  noInterrupts();
+
+  TCB0.CTRLA = 0;
+  TCB0.CTRLB = TCB_CNTMODE_INT_gc;
+  TCB0.CCMP = (uint16_t)((F_CPU / 2UL / 100UL) - 1UL);
+  TCB0.INTCTRL = TCB_CAPT_bm;
+  TCB0.CNT = 0;
+  TCB0.CTRLA = TCB_CLKSEL_DIV2_gc | TCB_ENABLE_bm;
+
+  interrupts();
+}
+
+void setupEstopInterrupt() {
+  attachInterrupt(digitalPinToInterrupt(PIN_ESTOP), onEstopTriggered, FALLING);
 }
 
 float readVoltage() {
@@ -66,9 +150,34 @@ float readVoltage() {
   return (raw * (V_REF / 1023.0)) * DIVIDER_RATIO;
 }
 
-void checkEstop() {
-  if (digitalRead(PIN_ESTOP) == LOW) {
-    throwFault("ESTOP TRIGGERED");
+void applyFaultOutputs() {
+  digitalWrite(PIN_CONTACTOR, LOW);
+  digitalWrite(PIN_PRECHARGE, LOW);
+}
+
+void updateLedModeForFault(FaultType type) {
+  noInterrupts();
+  ledTickCounter = 0;
+
+  if (type == FAULT_ESTOP) {
+    ledMode = LED_SOLID;
+    ledOutputState = true;
+  } else if (type == FAULT_PRECHARGE_FAIL) {
+    ledMode = LED_BLINK_SLOW;
+  } else if (type == FAULT_CONTACTOR_WELD) {
+    ledMode = LED_BLINK_FAST;
+  } else {
+    ledMode = LED_OFF;
+    ledOutputState = false;
+  }
+
+  interrupts();
+}
+
+void handleEstopLatched() {
+  if (estopInterruptFlag) {
+    estopInterruptFlag = false;
+    throwFault(FAULT_ESTOP);
   }
 }
 
@@ -80,7 +189,7 @@ void beginPrecharge() {
   digitalWrite(PIN_PRECHARGE, HIGH);
 
   while (millis() - startTime < TIMEOUT_MS) {
-    checkEstop();
+    handleEstopLatched();
     if (faultActive) return;
 
     delay(200); // Sample rate
@@ -94,7 +203,6 @@ void beginPrecharge() {
       digitalWrite(PIN_CONTACTOR, HIGH);
       delay(100); // 100ms overlap
       digitalWrite(PIN_PRECHARGE, LOW);
-      digitalWrite(PIN_LED, HIGH); // Success Indicator
       return; 
     }
 
@@ -108,13 +216,23 @@ void beginPrecharge() {
   float finalDvdt = (finalV - lastVoltage) / finalDt;
 
   if (finalV < MIN_V_READY || finalDvdt > MAX_DV_DT) {
-    throwFault("PRECHARGE TIMEOUT / INSTABILITY");
+    throwFault(FAULT_PRECHARGE_FAIL);
   }
 }
 
-void throwFault(String reason) {
-  faultActive = true;
-  digitalWrite(PIN_CONTACTOR, LOW);
-  digitalWrite(PIN_PRECHARGE, LOW);
-  // Logic stops here; loop() handles the blink
+void throwFault(FaultType type) {
+  if (!faultActive) {
+    faultActive = true;
+    activeFault = type;
+    applyFaultOutputs();
+    updateLedModeForFault(type);
+    return;
+  }
+
+  // ESTOP always takes priority over any existing fault indication.
+  if (type == FAULT_ESTOP && activeFault != FAULT_ESTOP) {
+    activeFault = FAULT_ESTOP;
+    applyFaultOutputs();
+    updateLedModeForFault(FAULT_ESTOP);
+  }
 }
