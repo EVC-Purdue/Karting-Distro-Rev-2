@@ -96,8 +96,7 @@ void setup() {
   digitalWrite(PIN_LED, LOW);
 
   setupLedTimer();
-  setupEstopInterrupt();
-
+  
   // 2. Setup ADC & Read Initial State
   analogReference(INTERNAL4V3); // can use 4.3
   initialLoadVoltage = readVoltage();
@@ -107,6 +106,10 @@ void setup() {
   if (digitalRead(PIN_ESTOP) == LOW) {
     throwFault(FAULT_ESTOP);
   }
+
+  // Initialize interrupt monitoring *after* confirming stable state
+  setupEstopInterrupt();
+  estopInterruptFlag = false; 
 
   if (!faultActive && initialLoadVoltage > MIN_V_READY) {
     throwFault(FAULT_CONTACTOR_WELD);
