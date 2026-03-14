@@ -78,6 +78,15 @@ ISR(TCB0_INT_vect) {
 }
 
 void onEstopTriggered() {
+  // Filter checks: ensure pin stays LOW for ~1ms to rule out switching noise
+  // This prevents the contactor's own switching EMI from tripping the sensitive interrupt
+  for (int i = 0; i < 10; i++) {
+    if (digitalRead(PIN_ESTOP) == HIGH) {
+      return; // False alarm - pin returned high (safe state)
+    }
+    delayMicroseconds(100);
+  }
+
   estopInterruptFlag = true;
 
   digitalWrite(PIN_CONTACTOR, LOW);
